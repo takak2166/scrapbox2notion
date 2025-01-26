@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Build artifacts
+bin/
+
+# Generated markdown files
+output/
+
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
