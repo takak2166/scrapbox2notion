@@ -12,7 +12,7 @@ import (
 
 // Client wraps the Notion API client
 type Client struct {
-	client     *notionapi.Client
+	client     NotionClient
 	parentID   notionapi.PageID
 	parentType notionapi.ParentType
 }
@@ -29,116 +29,12 @@ func New() (*Client, error) {
 		return nil, fmt.Errorf("NOTION_PARENT_PAGE_ID is not set")
 	}
 
+	notionClient := notionapi.NewClient(notionapi.Token(apiKey))
 	return &Client{
-		client:     notionapi.NewClient(notionapi.Token(apiKey)),
+		client:     newNotionClientAdapter(notionClient),
 		parentID:   notionapi.PageID(parentID),
 		parentType: "page_id",
 	}, nil
-}
-
-// CreateTagsDatabase creates a new database for tags if it doesn't exist
-func (c *Client) CreateTagsDatabase(ctx context.Context) (notionapi.DatabaseID, error) {
-	// Check if database already exists
-	dbID := os.Getenv("NOTION_TAGS_DATABASE_ID")
-	if dbID != "" {
-		logger.Debug("Using existing tags database", map[string]interface{}{
-			"database_id": dbID,
-		})
-		return notionapi.DatabaseID(dbID), nil
-	}
-
-	logger.Info("Creating new tags database", nil)
-
-	// Create new database
-	dbReq := &notionapi.DatabaseCreateRequest{
-		Parent: notionapi.Parent{
-			Type:   c.parentType,
-			PageID: c.parentID,
-		},
-		Title: []notionapi.RichText{
-			{
-				Text: &notionapi.Text{
-					Content: "Tags",
-				},
-			},
-		},
-		Properties: notionapi.PropertyConfigs{
-			"Name": notionapi.TitlePropertyConfig{
-				Type:  "title",
-				Title: struct{}{},
-			},
-		},
-		IsInline: false,
-	}
-
-	db, err := c.client.Database.Create(ctx, dbReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to create tags database: %w", err)
-	}
-
-	dbID = string(db.ID)
-	logger.Info("Successfully created tags database", map[string]interface{}{
-		"database_id": dbID,
-	})
-
-	return notionapi.DatabaseID(db.ID), nil
-}
-
-// CreateOrGetTag creates a new tag in the database or gets existing one
-func (c *Client) CreateOrGetTag(ctx context.Context, dbID notionapi.DatabaseID, tagName string) (notionapi.PageID, error) {
-	// Search for existing tag
-	query := &notionapi.DatabaseQueryRequest{
-		Filter: &notionapi.PropertyFilter{
-			Property: "Name",
-			RichText: &notionapi.TextFilterCondition{
-				Equals: tagName,
-			},
-		},
-	}
-
-	result, err := c.client.Database.Query(ctx, dbID, query)
-	if err != nil {
-		return "", fmt.Errorf("failed to query tags: %w", err)
-	}
-
-	if len(result.Results) > 0 {
-		logger.Debug("Found existing tag", map[string]interface{}{
-			"tag": tagName,
-			"id":  result.Results[0].ID,
-		})
-		return notionapi.PageID(result.Results[0].ID), nil
-	}
-
-	// Create new tag
-	pageReq := &notionapi.PageCreateRequest{
-		Parent: notionapi.Parent{
-			Type:       "database_id",
-			DatabaseID: dbID,
-		},
-		Properties: notionapi.Properties{
-			"Name": notionapi.TitleProperty{
-				Title: []notionapi.RichText{
-					{
-						Text: &notionapi.Text{
-							Content: tagName,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	page, err := c.client.Page.Create(ctx, pageReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to create tag: %w", err)
-	}
-
-	logger.Debug("Created new tag", map[string]interface{}{
-		"tag": tagName,
-		"id":  page.ID,
-	})
-
-	return notionapi.PageID(page.ID), nil
 }
 
 // CreatePage creates a new page in Notion with the given title and markdown content
@@ -148,26 +44,7 @@ func (c *Client) CreatePage(ctx context.Context, title string, content string, t
 		"tags":  tags,
 	})
 
-	// Create or get tags database
-	dbID, err := c.CreateTagsDatabase(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to setup tags database: %w", err)
-	}
-
-	// Create or get tag pages
-	var tagIDs []notionapi.PageID
-	for _, tag := range tags {
-		tagID, err := c.CreateOrGetTag(ctx, dbID, tag)
-		if err != nil {
-			logger.Error("Failed to create/get tag", err, map[string]interface{}{
-				"tag": tag,
-			})
-			continue
-		}
-		tagIDs = append(tagIDs, tagID)
-	}
-
-	// Create page properties
+	// Create page properties (only title)
 	properties := notionapi.Properties{
 		"title": notionapi.TitleProperty{
 			Title: []notionapi.RichText{
@@ -180,18 +57,6 @@ func (c *Client) CreatePage(ctx context.Context, title string, content string, t
 		},
 	}
 
-	// Add tags relation if we have tags
-	if len(tagIDs) > 0 {
-		properties["Tags"] = notionapi.RelationProperty{
-			Relation: make([]notionapi.Relation, len(tagIDs)),
-		}
-		for i, tagID := range tagIDs {
-			properties["Tags"].(notionapi.RelationProperty).Relation[i] = notionapi.Relation{
-				ID: tagID,
-			}
-		}
-	}
-
 	// Create page
 	pageParams := &notionapi.PageCreateRequest{
 		Parent: notionapi.Parent{
@@ -202,15 +67,146 @@ func (c *Client) CreatePage(ctx context.Context, title string, content string, t
 		Children:   c.convertMarkdownToBlocks(content),
 	}
 
-	_, err = c.client.Page.Create(ctx, pageParams)
+	page, err := c.client.Page().Create(ctx, pageParams)
 	if err != nil {
 		return fmt.Errorf("failed to create page: %w", err)
+	}
+
+	// Create or update gallery views for each tag
+	for _, tag := range tags {
+		if err := c.addPageToTagGallery(ctx, page.ID, tag); err != nil {
+			logger.Error("Failed to add page to tag gallery", err, map[string]interface{}{
+				"tag":  tag,
+				"page": title,
+			})
+		}
 	}
 
 	logger.Info("Successfully created Notion page", map[string]interface{}{
 		"title": title,
 		"tags":  tags,
 	})
+
+	return nil
+}
+
+// addPageToTagGallery creates a gallery view for the tag if it doesn't exist and adds the page to it
+func (c *Client) addPageToTagGallery(ctx context.Context, pageID notionapi.ObjectID, tag string) error {
+	// Search for existing gallery page with this tag name
+	query := &notionapi.SearchRequest{
+		Query: tag,
+		Filter: notionapi.SearchFilter{
+			Property: "object",
+			Value:    "page",
+		},
+	}
+
+	results, err := c.client.Search().Do(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to search for tag gallery: %w", err)
+	}
+
+	var galleryPage *notionapi.Page
+	for _, result := range results.Results {
+		if page, ok := result.(*notionapi.Page); ok {
+			if title, ok := page.Properties["title"].(notionapi.TitleProperty); ok {
+				if len(title.Title) > 0 && title.Title[0].Text != nil && title.Title[0].Text.Content == tag {
+					galleryPage = page
+					break
+				}
+			}
+		}
+	}
+
+	// Create gallery page if it doesn't exist
+	if galleryPage == nil {
+		pageParams := &notionapi.PageCreateRequest{
+			Parent: notionapi.Parent{
+				Type:   c.parentType,
+				PageID: c.parentID,
+			},
+			Properties: notionapi.Properties{
+				"title": notionapi.TitleProperty{
+					Title: []notionapi.RichText{
+						{
+							Text: &notionapi.Text{
+								Content: tag,
+							},
+						},
+					},
+				},
+			},
+			Children: []notionapi.Block{
+				&notionapi.ParagraphBlock{
+					BasicBlock: notionapi.BasicBlock{
+						Object: "block",
+						Type:   notionapi.BlockTypeParagraph,
+					},
+					Paragraph: notionapi.Paragraph{
+						RichText: []notionapi.RichText{
+							{
+								Text: &notionapi.Text{
+									Content: fmt.Sprintf("Pages tagged with #%s", tag),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		var err error
+		galleryPage, err = c.client.Page().Create(ctx, pageParams)
+		if err != nil {
+			return fmt.Errorf("failed to create tag gallery page: %w", err)
+		}
+	}
+
+	// Add link to the page in the gallery
+	linkBlock := &notionapi.ParagraphBlock{
+		BasicBlock: notionapi.BasicBlock{
+			Object: "block",
+			Type:   notionapi.BlockTypeParagraph,
+		},
+		Paragraph: notionapi.Paragraph{
+			RichText: []notionapi.RichText{
+				{
+					Text: &notionapi.Text{
+						Content: "📄 ",
+					},
+				},
+				{
+					Text: &notionapi.Text{
+						Content: pageID.String(),
+					},
+					Href: fmt.Sprintf("https://notion.so/%s", pageID),
+				},
+			},
+		},
+	}
+
+	// Check if the link already exists to maintain idempotency
+	blocks, err := c.client.Block().GetChildren(ctx, notionapi.BlockID(galleryPage.ID), nil)
+	if err != nil {
+		return fmt.Errorf("failed to get gallery blocks: %w", err)
+	}
+
+	for _, block := range blocks.Results {
+		if paragraph, ok := block.(*notionapi.ParagraphBlock); ok {
+			if len(paragraph.Paragraph.RichText) > 1 && paragraph.Paragraph.RichText[1].Text.Content == pageID.String() {
+				// Link already exists
+				return nil
+			}
+		}
+	}
+
+	// Append the link block
+	_, err = c.client.Block().AppendChildren(ctx, notionapi.BlockID(galleryPage.ID), &notionapi.AppendBlockChildrenRequest{
+		Children: []notionapi.Block{linkBlock},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to append page link to gallery: %w", err)
+	}
 
 	return nil
 }
