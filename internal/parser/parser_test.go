@@ -3,9 +3,8 @@ package parser
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/takak2166/scrapbox2notion/internal/models"
 )
 
 func TestParseFile(t *testing.T) {
@@ -60,76 +59,55 @@ func TestParseFile(t *testing.T) {
 }
 
 func TestConvertToMarkdown(t *testing.T) {
-	tests := []struct {
-		name     string
-		page     models.Page
-		expected string
+	// Load test cases from testfiles/output directory
+	testCases := []struct {
+		inputFile   string
+		outputFiles []string
 	}{
 		{
-			name: "Basic page with title and content",
-			page: models.Page{
-				Title: "Test Page",
-				Lines: []models.Line{
-					{Text: "Test Page"},
-					{Text: "This is a test"},
-				},
-			},
-			expected: "# Test Page\n\nThis is a test\n",
-		},
-		{
-			name: "Page with indentation",
-			page: models.Page{
-				Title: "Indented List",
-				Lines: []models.Line{
-					{Text: "Indented List"},
-					{Text: " Item 1"},
-					{Text: "  Item 1.1"},
-					{Text: " Item 2"},
-				},
-			},
-			expected: "# Indented List\n\n- Item 1\n  - Item 1.1\n- Item 2\n",
-		},
-		{
-			name: "Page with formatting",
-			page: models.Page{
-				Title: "Formatted Text",
-				Lines: []models.Line{
-					{Text: "Formatted Text"},
-					{Text: "[* Bold text]"},
-					{Text: "[/ Italic text]"},
-					{Text: "[- Strikethrough]"},
-					{Text: "[$ E = mc^2]"},
-					{Text: "code:test.js"},
-					{Text: " console.log('hello')"},
-					{Text: "[** h4 text]"},
-					{Text: "[*** h3 text]"},
-					{Text: "[**** h2 text]"},
-				},
-			},
-			expected: "# Formatted Text\n\n**Bold text**\n_Italic text_\n~~Strikethrough~~\n$E = mc^2$\n```test.js\nconsole.log('hello')\n```\n#### h4 text\n### h3 text\n## h2 text\n",
-		},
-		{
-			name: "Page with links",
-			page: models.Page{
-				Title: "Links",
-				Lines: []models.Line{
-					{Text: "Links"},
-					{Text: "http://example.com"},
-					{Text: "http://example.com/image.jpg"},
-					{Text: "[Another Page]"},
-				},
-				LinksLc: []string{"another_page"},
-			},
-			expected: "# Links\n\nhttp://example.com\n![image](http://example.com/image.jpg)\n[Another Page](./another_page.md)\n",
+			"takak_20250125_051047.json",
+			[]string{"Test Page1.md", "Test Page2.md"},
 		},
 	}
 
 	p := New()
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := p.ConvertToMarkdown(&tt.page)
-			if result != tt.expected {
-				t.Errorf("ConvertToMarkdown() = %v, want %v", result, tt.expected)
+	for _, tc := range testCases {
+		t.Run(tc.inputFile, func(t *testing.T) {
+			// Get test file path
+			filePath := filepath.Join("..", "..", "testfiles", "input", tc.inputFile)
+
+			// Parse JSON file
+			if err := p.ParseFile(filePath); err != nil {
+				t.Fatalf("Failed to parse file: %v", err)
+			}
+
+			// Read and combine expected markdown files
+			var expected strings.Builder
+			for _, outputFile := range tc.outputFiles {
+				expectedFilePath := filepath.Join("..", "..", "testfiles", "output", outputFile)
+				content, err := os.ReadFile(expectedFilePath)
+				if err != nil {
+					t.Fatalf("Failed to read expected file: %v", err)
+				}
+				expected.WriteString(string(content))
+				expected.WriteString("\n\n")
+			}
+
+			// Convert all pages to markdown and combine
+			pages := p.GetPages()
+			if len(pages) == 0 {
+				t.Fatal("No pages found in parsed export")
+			}
+
+			var result strings.Builder
+			for _, page := range pages {
+				result.WriteString(p.ConvertToMarkdown(&page))
+				result.WriteString("\n\n")
+			}
+
+			// Compare results
+			if result.String() != expected.String() {
+				t.Errorf("Expected and actual results do not match\nExpected:\n%s\n\nActual:\n%s", expected.String(), result.String())
 			}
 		})
 	}

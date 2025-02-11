@@ -108,52 +108,9 @@ This is a test page.`,
 				mockClient.EXPECT().Search().Return(mockSearch).AnyTimes()
 				mockClient.EXPECT().Block().Return(mockBlock).AnyTimes()
 
-				mockPage.EXPECT().Create(gomock.Any(), gomock.Any()).Return(&notionapi.Page{
-					Object: "page",
-					ID:     "test_page_id",
-					Properties: notionapi.Properties{
-						"title": notionapi.TitleProperty{
-							Title: []notionapi.RichText{
-								{
-									Text: &notionapi.Text{
-										Content: "Test Page",
-									},
-								},
-							},
-						},
-					},
-				}, nil)
-
-				mockSearch.EXPECT().Do(gomock.Any(), gomock.Any()).Return(&notionapi.SearchResponse{
-					Results: []notionapi.Object{},
-				}, nil)
-
 				// Mock database creation
 				mockDatabase := mock_notion.NewMockDatabaseService(ctrl)
 				mockClient.EXPECT().Database().Return(mockDatabase).AnyTimes()
-
-				// Mock database creation response
-				mockDatabase.EXPECT().Create(gomock.Any(), gomock.Any()).Return(&notionapi.Database{
-					Object: "database",
-					ID:     "test_db_id",
-					Title: []notionapi.RichText{
-						{
-							Text: &notionapi.Text{
-								Content: "test",
-							},
-						},
-					},
-				}, nil)
-
-				// Mock page update instead of create
-				mockPage.EXPECT().Update(gomock.Any(), notionapi.PageID("test_page_id"), gomock.Any()).Return(&notionapi.Page{
-					Object: "page",
-					ID:     "test_page_id",
-					Parent: notionapi.Parent{
-						Type:       "database_id",
-						DatabaseID: "test_db_id",
-					},
-				}, nil)
 
 				// Mock database search
 				mockSearch.EXPECT().Do(gomock.Any(), gomock.Any()).Return(&notionapi.SearchResponse{
@@ -170,7 +127,35 @@ This is a test page.`,
 							},
 						},
 					},
+				}, nil).Times(2)
+
+				// Mock page create
+				mockPage.EXPECT().Create(gomock.Any(), gomock.Any()).Return(&notionapi.Page{
+					Object: "page",
+					ID:     "test_page_id",
+					Properties: notionapi.Properties{
+						"title": notionapi.TitleProperty{
+							Title: []notionapi.RichText{
+								{
+									Text: &notionapi.Text{
+										Content: "Test Page",
+									},
+								},
+							},
+						},
+					},
+				}, nil).Times(2)
+
+				// Mock page get
+				mockPage.EXPECT().Get(gomock.Any(), notionapi.PageID("test_page_id")).Return(&notionapi.Page{
+					Object: "page",
+					ID:     "test_page_id",
+					Parent: notionapi.Parent{
+						Type:       "database_id",
+						DatabaseID: "test_db_id",
+					},
 				}, nil)
+
 			},
 		},
 	}
