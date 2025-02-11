@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jomei/notionapi"
 	"github.com/takak2166/scrapbox2notion/internal/logger"
@@ -44,32 +45,79 @@ func (c *Client) CreatePage(ctx context.Context, title string, content string, t
 		"tags":  tags,
 	})
 
-	// Create page properties (only title)
-	properties := notionapi.Properties{
-		"title": notionapi.TitleProperty{
-			Title: []notionapi.RichText{
-				{
-					Text: &notionapi.Text{
-						Content: title,
+	// If no tags, use default parent
+	parent := notionapi.Parent{
+		Type:   c.parentType,
+		PageID: c.parentID,
+	}
+
+	// If tags exist, create/get tag database and use as parent
+	if len(tags) > 0 {
+		// Use first tag as parent
+		tagDB, err := c.createDatabase(ctx, tags[0], map[string]notionapi.PropertyConfig{
+			"Name": notionapi.TitlePropertyConfig{
+				Type:  "title",
+				Title: struct{}{},
+			},
+			"Created": notionapi.DatePropertyConfig{
+				Type: "date",
+				Date: struct{}{},
+			},
+			"Content": notionapi.RichTextPropertyConfig{
+				Type:     "rich_text",
+				RichText: struct{}{},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create tag database: %w", err)
+		}
+
+		parent = notionapi.Parent{
+			Type:       "database_id",
+			DatabaseID: notionapi.DatabaseID(tagDB.ID),
+		}
+	}
+
+	// Create page with determined parent
+	pageParams := &notionapi.PageCreateRequest{
+		Parent: parent,
+		Properties: notionapi.Properties{
+			"Name": notionapi.TitleProperty{
+				Title: []notionapi.RichText{
+					{
+						Text: &notionapi.Text{
+							Content: title,
+						},
+					},
+				},
+			},
+			"Content": notionapi.RichTextProperty{
+				RichText: []notionapi.RichText{
+					{
+						Text: &notionapi.Text{
+							Content: content,
+						},
 					},
 				},
 			},
 		},
+		Children: c.convertMarkdownToBlocks(content),
 	}
 
-	// Create page
-	pageParams := &notionapi.PageCreateRequest{
-		Parent: notionapi.Parent{
-			Type:   c.parentType,
-			PageID: c.parentID,
-		},
-		Properties: properties,
-		Children:   c.convertMarkdownToBlocks(content),
+	// Retry page creation up to 3 times with 1 second delay
+	var page *notionapi.Page
+	var err error
+
+	for i := 0; i < 3; i++ {
+		page, err = c.client.Page().Create(ctx, pageParams)
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
 	}
 
-	page, err := c.client.Page().Create(ctx, pageParams)
 	if err != nil {
-		return fmt.Errorf("failed to create page: %w", err)
+		return fmt.Errorf("failed to create page after 3 attempts: %w", err)
 	}
 
 	// Create or update gallery views for each tag
@@ -90,125 +138,160 @@ func (c *Client) CreatePage(ctx context.Context, title string, content string, t
 	return nil
 }
 
-// addPageToTagGallery creates a gallery view for the tag if it doesn't exist and adds the page to it
+// addPageToTagGallery creates a database for the tag if it doesn't exist and adds the page to it
 func (c *Client) addPageToTagGallery(ctx context.Context, pageID notionapi.ObjectID, tag string) error {
-	// Search for existing gallery page with this tag name
+	// Search for existing database with this tag name
 	query := &notionapi.SearchRequest{
 		Query: tag,
 		Filter: notionapi.SearchFilter{
 			Property: "object",
-			Value:    "page",
+			Value:    "database",
 		},
 	}
 
 	results, err := c.client.Search().Do(ctx, query)
 	if err != nil {
-		return fmt.Errorf("failed to search for tag gallery: %w", err)
+		return fmt.Errorf("failed to search for tag database: %w", err)
 	}
 
-	var galleryPage *notionapi.Page
+	var tagDatabase *notionapi.Database
 	for _, result := range results.Results {
-		if page, ok := result.(*notionapi.Page); ok {
-			if title, ok := page.Properties["title"].(notionapi.TitleProperty); ok {
-				if len(title.Title) > 0 && title.Title[0].Text != nil && title.Title[0].Text.Content == tag {
-					galleryPage = page
-					break
-				}
+		if db, ok := result.(*notionapi.Database); ok {
+			if len(db.Title) > 0 && db.Title[0].Text != nil && db.Title[0].Text.Content == tag {
+				tagDatabase = db
+				break
 			}
 		}
 	}
 
-	// Create gallery page if it doesn't exist
-	if galleryPage == nil {
-		pageParams := &notionapi.PageCreateRequest{
+	// Create database if it doesn't exist
+	if tagDatabase == nil {
+		// Define database properties
+		properties := notionapi.PropertyConfigs{
+			"Name": notionapi.TitlePropertyConfig{
+				Type:  "title",
+				Title: struct{}{},
+			},
+			"Created": notionapi.DatePropertyConfig{
+				Type: "date",
+				Date: struct{}{},
+			},
+		}
+
+		dbParams := &notionapi.DatabaseCreateRequest{
 			Parent: notionapi.Parent{
 				Type:   c.parentType,
 				PageID: c.parentID,
 			},
-			Properties: notionapi.Properties{
-				"title": notionapi.TitleProperty{
-					Title: []notionapi.RichText{
-						{
-							Text: &notionapi.Text{
-								Content: tag,
-							},
-						},
+			Title: []notionapi.RichText{
+				{
+					Text: &notionapi.Text{
+						Content: tag,
 					},
 				},
 			},
-			Children: []notionapi.Block{
-				&notionapi.ParagraphBlock{
-					BasicBlock: notionapi.BasicBlock{
-						Object: "block",
-						Type:   notionapi.BlockTypeParagraph,
-					},
-					Paragraph: notionapi.Paragraph{
-						RichText: []notionapi.RichText{
-							{
-								Text: &notionapi.Text{
-									Content: fmt.Sprintf("Pages tagged with #%s", tag),
-								},
-							},
-						},
-					},
-				},
-			},
+			Properties: properties,
+			IsInline:   true,
 		}
 
-		var err error
-		galleryPage, err = c.client.Page().Create(ctx, pageParams)
+		tagDatabase, err = c.client.Database().Create(ctx, dbParams)
 		if err != nil {
-			return fmt.Errorf("failed to create tag gallery page: %w", err)
+			return fmt.Errorf("failed to create tag database: %w", err)
 		}
 	}
 
-	// Add link to the page in the gallery
-	linkBlock := &notionapi.ParagraphBlock{
-		BasicBlock: notionapi.BasicBlock{
-			Object: "block",
-			Type:   notionapi.BlockTypeParagraph,
+	// Get page details to add to database
+	page, err := c.client.Page().Get(ctx, notionapi.PageID(pageID))
+	if err != nil {
+		return fmt.Errorf("failed to get page details: %w", err)
+	}
+
+	// Create database entry
+	pageTitle := ""
+	if titleProp, ok := page.Properties["title"].(notionapi.TitleProperty); ok && len(titleProp.Title) > 0 {
+		pageTitle = titleProp.Title[0].Text.Content
+	}
+
+	createdTime := notionapi.Date(page.CreatedTime)
+	pageParams := &notionapi.PageCreateRequest{
+		Parent: notionapi.Parent{
+			Type:       "database_id",
+			DatabaseID: notionapi.DatabaseID(tagDatabase.ID),
 		},
-		Paragraph: notionapi.Paragraph{
-			RichText: []notionapi.RichText{
-				{
-					Text: &notionapi.Text{
-						Content: "📄 ",
+		Properties: notionapi.Properties{
+			"Name": notionapi.TitleProperty{
+				Title: []notionapi.RichText{
+					{
+						Text: &notionapi.Text{
+							Content: pageTitle,
+						},
 					},
 				},
-				{
-					Text: &notionapi.Text{
-						Content: pageID.String(),
-					},
-					Href: fmt.Sprintf("https://notion.so/%s", pageID),
+			},
+			"Created": notionapi.DateProperty{
+				Date: &notionapi.DateObject{
+					Start: &createdTime,
 				},
 			},
 		},
 	}
 
-	// Check if the link already exists to maintain idempotency
-	blocks, err := c.client.Block().GetChildren(ctx, notionapi.BlockID(galleryPage.ID), nil)
+	_, err = c.client.Page().Create(ctx, pageParams)
 	if err != nil {
-		return fmt.Errorf("failed to get gallery blocks: %w", err)
+		return fmt.Errorf("failed to create database entry: %w", err)
 	}
 
-	for _, block := range blocks.Results {
-		if paragraph, ok := block.(*notionapi.ParagraphBlock); ok {
-			if len(paragraph.Paragraph.RichText) > 1 && paragraph.Paragraph.RichText[1].Text.Content == pageID.String() {
-				// Link already exists
-				return nil
+	return nil
+}
+
+// createDatabase creates a new database with the given name and properties if it doesn't already exist
+func (c *Client) createDatabase(ctx context.Context, name string, properties notionapi.PropertyConfigs) (*notionapi.Database, error) {
+	// Search for existing database with this name
+	query := &notionapi.SearchRequest{
+		Query: name,
+		Filter: notionapi.SearchFilter{
+			Property: "object",
+			Value:    "database",
+		},
+	}
+
+	results, err := c.client.Search().Do(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search for existing database: %w", err)
+	}
+
+	// Check if a database with the same name already exists
+	for _, result := range results.Results {
+		if db, ok := result.(*notionapi.Database); ok {
+			if len(db.Title) > 0 && db.Title[0].Text != nil && db.Title[0].Text.Content == name {
+				return db, nil
 			}
 		}
 	}
 
-	// Append the link block
-	_, err = c.client.Block().AppendChildren(ctx, notionapi.BlockID(galleryPage.ID), &notionapi.AppendBlockChildrenRequest{
-		Children: []notionapi.Block{linkBlock},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to append page link to gallery: %w", err)
+	// Create new database if it doesn't exist
+	dbParams := &notionapi.DatabaseCreateRequest{
+		Parent: notionapi.Parent{
+			Type:   c.parentType,
+			PageID: c.parentID,
+		},
+		Title: []notionapi.RichText{
+			{
+				Text: &notionapi.Text{
+					Content: name,
+				},
+			},
+		},
+		Properties: properties,
+		IsInline:   true,
 	}
 
-	return nil
+	db, err := c.client.Database().Create(ctx, dbParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database: %w", err)
+	}
+
+	return db, nil
 }
 
 // convertMarkdownToBlocks converts markdown content to Notion blocks

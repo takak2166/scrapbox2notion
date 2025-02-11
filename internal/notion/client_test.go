@@ -128,16 +128,49 @@ This is a test page.`,
 					Results: []notionapi.Object{},
 				}, nil)
 
-				mockPage.EXPECT().Create(gomock.Any(), gomock.Any()).Return(&notionapi.Page{
+				// Mock database creation
+				mockDatabase := mock_notion.NewMockDatabaseService(ctrl)
+				mockClient.EXPECT().Database().Return(mockDatabase).AnyTimes()
+
+				// Mock database creation response
+				mockDatabase.EXPECT().Create(gomock.Any(), gomock.Any()).Return(&notionapi.Database{
+					Object: "database",
+					ID:     "test_db_id",
+					Title: []notionapi.RichText{
+						{
+							Text: &notionapi.Text{
+								Content: "test",
+							},
+						},
+					},
+				}, nil)
+
+				// Mock page update instead of create
+				mockPage.EXPECT().Update(gomock.Any(), notionapi.PageID("test_page_id"), gomock.Any()).Return(&notionapi.Page{
 					Object: "page",
-					ID:     "gallery_page_id",
+					ID:     "test_page_id",
+					Parent: notionapi.Parent{
+						Type:       "database_id",
+						DatabaseID: "test_db_id",
+					},
 				}, nil)
 
-				mockBlock.EXPECT().GetChildren(gomock.Any(), gomock.Any(), gomock.Any()).Return(&notionapi.GetChildrenResponse{
-					Results: []notionapi.Block{},
+				// Mock database search
+				mockSearch.EXPECT().Do(gomock.Any(), gomock.Any()).Return(&notionapi.SearchResponse{
+					Results: []notionapi.Object{
+						&notionapi.Database{
+							Object: "database",
+							ID:     "test_db_id",
+							Title: []notionapi.RichText{
+								{
+									Text: &notionapi.Text{
+										Content: "test",
+									},
+								},
+							},
+						},
+					},
 				}, nil)
-
-				mockBlock.EXPECT().AppendChildren(gomock.Any(), gomock.Any(), gomock.Any()).Return(&notionapi.AppendBlockChildrenResponse{}, nil)
 			},
 		},
 	}
