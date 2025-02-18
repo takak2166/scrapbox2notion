@@ -101,11 +101,6 @@ func main() {
 		}
 
 		successCount++
-		logger.Info("Successfully processed page", map[string]interface{}{
-			"page":     page.Title,
-			"filepath": mdFilePath,
-			"tags":     page.Tags,
-		})
 	}
 
 	logger.Info("Migration completed", map[string]interface{}{
