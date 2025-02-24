@@ -90,7 +90,7 @@ func (c *Client) CreatePage(ctx context.Context, title string, content string, t
 
 			// Confirm database creation
 			var exists bool
-			for i := 0; i < 10; i++ {
+			for i := 0; i < 15; i++ {
 				results, err := c.client.Search().Do(ctx, query)
 				if err == nil && len(results.Results) > 0 {
 					if validateTagsDatabase(tag, results) != nil {

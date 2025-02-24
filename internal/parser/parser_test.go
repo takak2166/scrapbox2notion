@@ -8,53 +8,175 @@ import (
 )
 
 func TestParseFile(t *testing.T) {
-	// Create a temporary test file
-	content := `{
-		"name": "test",
-		"displayName": "Test Project",
-		"exported": 1681398816,
-		"pages": [
-			{
-				"title": "Test Page",
-				"created": 1543523476,
-				"updated": 1681397964,
-				"lines": [
+	testCases := map[string]struct {
+		content       string
+		expectedTitle string
+		expectedTags  []string
+	}{
+		"Page without tags": {
+			content: `{
+				"name": "test",
+				"displayName": "Test Project",
+				"exported": 1681398816,
+				"pages": [
 					{
-						"text": "Test Page",
+						"title": "Test Page",
 						"created": 1543523476,
-						"updated": 1543523682,
-						"userId": "user1"
-					},
-					{
-						"text": "This is a test",
-						"created": 1543523697,
-						"updated": 1651583814,
-						"userId": "user1"
+						"updated": 1681397964,
+						"lines": [
+							{
+								"text": "Test Page",
+								"created": 1543523476,
+								"updated": 1543523682,
+								"userId": "user1"
+							},
+							{
+								"text": "This is a test",
+								"created": 1543523697,
+								"updated": 1651583814,
+								"userId": "user1"
+							}
+						],
+						"linksLc": ["test"]
 					}
-				],
-				"linksLc": ["test"]
+				]
+			}`,
+			expectedTitle: "Test Page",
+			expectedTags:  []string{},
+		},
+		"Page with one tag": {
+			content: `{
+				"name": "test",
+				"displayName": "Test Project",
+				"exported": 1681398816,
+				"pages": [
+					{
+						"title": "Test Page with One Tag",
+						"created": 1543523476,
+						"updated": 1681397964,
+						"lines": [
+							{
+								"text": "Test Page with One Tag",
+								"created": 1543523476,
+								"updated": 1543523682,
+								"userId": "user1"
+							},
+							{
+								"text": "#tag1",
+								"created": 1543523697,
+								"updated": 1651583814,
+								"userId": "user1"
+							}
+						],
+						"linksLc": ["test"]
+					}
+				]
+			}`,
+			expectedTitle: "Test Page with One Tag",
+			expectedTags:  []string{"tag1"},
+		},
+		"Page with two tags": {
+			content: `{
+				"name": "test",
+				"displayName": "Test Project",
+				"exported": 1681398816,
+				"pages": [
+					{
+						"title": "Test Page with Two Tags",
+						"created": 1543523476,
+						"updated": 1681397964,
+						"lines": [
+							{
+								"text": "Test Page with Two Tags",
+								"created": 1543523476,
+								"updated": 1543523682,
+								"userId": "user1"
+							},
+							{
+								"text": "#tag1 #tag2",
+								"created": 1543523697,
+								"updated": 1651583814,
+								"userId": "user1"
+							}
+						],
+						"linksLc": ["test"]
+					}
+				]
+			}`,
+			expectedTitle: "Test Page with Two Tags",
+			expectedTags:  []string{"tag1", "tag2"},
+		},
+		"Page with two tags and extra spaces": {
+			content: `{
+				"name": "test",
+				"displayName": "Test Project",
+				"exported": 1681398816,
+				"pages": [
+					{
+						"title": "Test Page with Two Tags and Extra Spaces",
+						"created": 1543523476,
+						"updated": 1681397964,
+						"lines": [
+							{
+								"text": "Test Page with Two Tags and Extra Spaces",
+								"created": 1543523476,
+								"updated": 1543523682,
+								"userId": "user1"
+							},
+							{
+								"text": "#tag1 text",
+								"created": 1543523697,
+								"updated": 1651583814,
+								"userId": "user1"
+							},
+							{
+								"text": "text #tag2",
+								"created": 1543523697,
+								"updated": 1651583814,
+								"userId": "user1"
+							}
+						],
+						"linksLc": ["test"]
+					}
+				]
+			}`,
+			expectedTitle: "Test Page with Two Tags and Extra Spaces",
+			expectedTags:  []string{"tag1", "tag2"},
+		},
+	}
+
+	for name, tt := range testCases {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			tmpFile := filepath.Join(tmpDir, "test.json")
+			if err := os.WriteFile(tmpFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to create test file: %v", err)
 			}
-		]
-	}`
 
-	tmpDir := t.TempDir()
-	tmpFile := filepath.Join(tmpDir, "test.json")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
+			p := New()
+			if err := p.ParseFile(tmpFile); err != nil {
+				t.Errorf("ParseFile() error = %v", err)
+			}
 
-	p := New()
-	if err := p.ParseFile(tmpFile); err != nil {
-		t.Errorf("ParseFile() error = %v", err)
-	}
+			pages := p.GetPages()
+			if len(pages) != 1 {
+				t.Errorf("Expected 1 page, got %d", len(pages))
+			}
 
-	pages := p.GetPages()
-	if len(pages) != 1 {
-		t.Errorf("Expected 1 page, got %d", len(pages))
-	}
+			if pages[0].Title != tt.expectedTitle {
+				t.Errorf("Expected page title '%s', got '%s'", tt.expectedTitle, pages[0].Title)
+			}
 
-	if pages[0].Title != "Test Page" {
-		t.Errorf("Expected page title 'Test Page', got '%s'", pages[0].Title)
+			if len(pages[0].Tags) != len(tt.expectedTags) {
+				t.Errorf("Expected tags %v, got %v", tt.expectedTags, pages[0].Tags)
+			} else {
+				for i, tag := range tt.expectedTags {
+					if pages[0].Tags[i] != tag {
+						t.Errorf("Expected tag '%s', got '%s'", tag, pages[0].Tags[i])
+					}
+				}
+			}
+		})
 	}
 }
 

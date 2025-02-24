@@ -52,10 +52,15 @@ func (p *Parser) ParseFile(filepath string) error {
 func (p *Parser) extractTags(page *models.Page) {
 	var tags []string
 	for _, line := range page.Lines {
-		if strings.HasPrefix(strings.TrimSpace(line.Text), "#") {
-			tag := strings.TrimSpace(strings.TrimPrefix(line.Text, "#"))
-			if tag != "" {
-				tags = append(tags, tag)
+		// Split the line into words
+		words := strings.Fields(line.Text)
+		for _, word := range words {
+			// Check if the word starts with #
+			if strings.HasPrefix(word, "#") {
+				tag := strings.TrimPrefix(word, "#")
+				if tag != "" {
+					tags = append(tags, tag)
+				}
 			}
 		}
 	}
