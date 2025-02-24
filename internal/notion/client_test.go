@@ -2,6 +2,7 @@ package notion
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -77,43 +78,44 @@ func TestCreatePage(t *testing.T) {
 		t.Fatalf("Failed to create client: %v", err)
 	}
 
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	ctx := context.Background()
 
-	mockClient := mock_notion.NewMockNotionClient(ctrl)
-	mockPage := mock_notion.NewMockPageService(ctrl)
-	mockSearch := mock_notion.NewMockSearchService(ctrl)
-	mockBlock := mock_notion.NewMockBlockService(ctrl)
-
-	client.client = mockClient
-
-	tests := []struct {
-		name        string
-		title       string
-		content     string
-		tags        []string
-		expectError bool
-		setupMocks  func()
+	tests := map[string]struct {
+		title      string
+		content    string
+		tags       []string
+		setupMocks func(mockClient *mock_notion.MockNotionClient, mockPage *mock_notion.MockPageService, mockSearch *mock_notion.MockSearchService, mockDatabase *mock_notion.MockDatabaseService)
 	}{
-		{
-			name:  "Basic page",
+		"Success - With Tags": {
 			title: "Test Page",
 			content: `# Test Page
 
 This is a test page.`,
-			tags:        []string{"test"},
-			expectError: false,
-			setupMocks: func() {
-				mockClient.EXPECT().Page().Return(mockPage).AnyTimes()
+			tags: []string{"Test"},
+			setupMocks: func(mockClient *mock_notion.MockNotionClient, mockPage *mock_notion.MockPageService, mockSearch *mock_notion.MockSearchService, mockDatabase *mock_notion.MockDatabaseService) {
+				// Set up service returns
 				mockClient.EXPECT().Search().Return(mockSearch).AnyTimes()
-				mockClient.EXPECT().Block().Return(mockBlock).AnyTimes()
-
-				// Mock database creation
-				mockDatabase := mock_notion.NewMockDatabaseService(ctrl)
 				mockClient.EXPECT().Database().Return(mockDatabase).AnyTimes()
+				mockClient.EXPECT().Page().Return(mockPage).AnyTimes()
 
-				// Mock database search
-				mockSearch.EXPECT().Do(gomock.Any(), gomock.Any()).Return(&notionapi.SearchResponse{
+				// Initial search for database
+				mockSearch.EXPECT().Do(ctx, gomock.Any()).Return(&notionapi.SearchResponse{}, nil)
+
+				// Create database
+				mockDatabase.EXPECT().Create(ctx, gomock.Any()).Return(&notionapi.Database{
+					Object: "database",
+					ID:     "test_db_id",
+					Title: []notionapi.RichText{
+						{
+							Text: &notionapi.Text{
+								Content: "test",
+							},
+						},
+					},
+				}, nil)
+
+				// Validation searches for database creation
+				mockSearch.EXPECT().Do(ctx, gomock.Any()).Return(&notionapi.SearchResponse{
 					Results: []notionapi.Object{
 						&notionapi.Database{
 							Object: "database",
@@ -121,16 +123,21 @@ This is a test page.`,
 							Title: []notionapi.RichText{
 								{
 									Text: &notionapi.Text{
-										Content: "test",
+										Content: "Test",
 									},
 								},
 							},
 						},
 					},
-				}, nil).Times(2)
+				}, nil)
 
-				// Mock page create
-				mockPage.EXPECT().Create(gomock.Any(), gomock.Any()).Return(&notionapi.Page{
+				// Query database for existing pages
+				mockDatabase.EXPECT().Query(ctx, notionapi.DatabaseID("test_db_id"), gomock.Any()).Return(&notionapi.DatabaseQueryResponse{
+					Results: []notionapi.Page{},
+				}, nil)
+
+				// Create page
+				mockPage.EXPECT().Create(ctx, gomock.Any()).Return(&notionapi.Page{
 					Object: "page",
 					ID:     "test_page_id",
 					Properties: notionapi.Properties{
@@ -144,36 +151,105 @@ This is a test page.`,
 							},
 						},
 					},
-				}, nil).Times(2)
-
-				// Mock page get
-				mockPage.EXPECT().Get(gomock.Any(), notionapi.PageID("test_page_id")).Return(&notionapi.Page{
-					Object: "page",
-					ID:     "test_page_id",
-					Parent: notionapi.Parent{
-						Type:       "database_id",
-						DatabaseID: "test_db_id",
-					},
 				}, nil)
 
+				// Get page to confirm creation
+				mockPage.EXPECT().Get(ctx, notionapi.PageID("test_page_id")).Return(&notionapi.Page{
+					Object: "page",
+					ID:     "test_page_id",
+					Properties: notionapi.Properties{
+						"title": notionapi.TitleProperty{
+							Title: []notionapi.RichText{
+								{
+									Text: &notionapi.Text{
+										Content: "Test Page",
+									},
+								},
+							},
+						},
+					},
+				}, nil)
+			},
+		},
+
+		"Success - Without Tags": {
+			title: "Test Page 2",
+			content: `# Test Page 2
+
+This is another test page.`,
+			tags: []string{},
+			setupMocks: func(mockClient *mock_notion.MockNotionClient, mockPage *mock_notion.MockPageService, mockSearch *mock_notion.MockSearchService, mockDatabase *mock_notion.MockDatabaseService) {
+				// Set up service returns
+				mockClient.EXPECT().Search().Return(mockSearch).AnyTimes()
+				mockClient.EXPECT().Page().Return(mockPage).AnyTimes()
+
+				// Search for existing page
+				mockSearch.EXPECT().Do(ctx, gomock.Any()).Return(&notionapi.SearchResponse{
+					Results: []notionapi.Object{},
+				}, nil)
+
+				// Create page
+				mockPage.EXPECT().Create(ctx, gomock.Any()).Return(&notionapi.Page{
+					Object: "page",
+					ID:     "test_page_id_2",
+					Properties: notionapi.Properties{
+						"Name": notionapi.TitleProperty{
+							Title: []notionapi.RichText{
+								{
+									Text: &notionapi.Text{
+										Content: "Test Page 2",
+									},
+								},
+							},
+						},
+					},
+				}, nil)
+			},
+		},
+
+		"Failure - Empty Title": {
+			title: "",
+			content: `# Empty Page
+
+This page has no title.`,
+			tags: []string{"error"},
+			setupMocks: func(mockClient *mock_notion.MockNotionClient, mockPage *mock_notion.MockPageService, mockSearch *mock_notion.MockSearchService, mockDatabase *mock_notion.MockDatabaseService) {
+				// Set up service returns
+				mockClient.EXPECT().Search().Return(mockSearch).AnyTimes()
+				mockClient.EXPECT().Database().Return(mockDatabase).AnyTimes()
+
+				// Initial search for database
+				mockSearch.EXPECT().Do(ctx, gomock.Any()).Return(&notionapi.SearchResponse{}, nil)
+
+				// Database creation fails
+				mockDatabase.EXPECT().Create(ctx, gomock.Any()).Return(nil, errors.New("title cannot be empty"))
 			},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.setupMocks()
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			// Reinitialize mocks for each test case
+			mockClient := mock_notion.NewMockNotionClient(ctrl)
+			mockPage := mock_notion.NewMockPageService(ctrl)
+			mockSearch := mock_notion.NewMockSearchService(ctrl)
+			mockDatabase := mock_notion.NewMockDatabaseService(ctrl)
+
+			client.client = mockClient
+			tt.setupMocks(mockClient, mockPage, mockSearch, mockDatabase)
 
 			err := client.CreatePage(context.Background(), tt.title, tt.content, tt.tags)
-			if tt.expectError {
+			if name == "Failure - Empty Title" {
 				if err == nil {
-					t.Error("Expected error, got nil")
+					t.Error("Expected error but got nil")
 				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
 			}
 		})
 	}
